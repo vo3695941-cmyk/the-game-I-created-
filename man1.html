@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Dino Adventure - Stage 1 Absolute</title>
+    <style>
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+        body { margin: 0; padding: 0; background: #f7f7f7; display: flex; flex-direction: column; justify-content: space-between; align-items: center; height: 100vh; font-family: Arial, sans-serif; overflow: hidden; }
+        #gameContainer { position: relative; width: 100%; max-width: 800px; flex-grow: 1; display: flex; justify-content: center; align-items: center; background: #fff; }
+        canvas { width: 100%; height: auto; max-height: 100%; background: #fff; display: block; border-bottom: 2px solid #ccc; }
+        #uiOverlay { position: absolute; top: 15px; left: 15px; font-size: 15px; font-weight: bold; color: #333; z-index: 10; background: rgba(255,255,255,0.9); padding: 8px 12px; border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); pointer-events: none; white-space: pre-line; }
+        .controls { width: 100%; max-width: 800px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px; background: #eee; }
+        .btn { padding: 14px 0; background: #333; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: bold; text-align: center; touch-action: manipulation; }
+        .btn:active { background: #555; }
+        .btn-move { background: #4A90E2; }
+        .btn-move:active { background: #357ABD; }
+        .btn-special { background: #9B59B6; grid-column: span 3; padding: 15px 0; font-size: 14px; margin-top: 2px; }
+        .btn-special:active { background: #8E44AD; }
+        .btn-invinc { background: #F1C40F; color: #333; grid-column: span 3; padding: 15px 0; font-size: 14px; }
+        .btn-invinc:active { background: #D68910; color: #fff; }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <div id="uiOverlay">HP: 6 | Điểm: 0</div>
+    <canvas id="gameCanvas" width="800" height="300"></canvas>
+</div>
+
+<div class="controls">
+    <button class="btn btn-move" id="btnLeft">TRÁI</button>
+    <button class="btn btn-move" id="btnRight">PHẢI</button>
+    <button class="btn" id="btnJump">NHẢY</button>
+    <button class="btn" id="btnAttack">ĐÁNH (F)</button>
+    <button class="btn" id="btnShoot">BẮN (J)</button>
+    <button class="btn btn-invinc" id="btnInvinc">BẤT TỬ (5 GIÂY)</button>
+    <button class="btn btn-special" id="btnTimeStop">THE WORLD (NGỪNG THỜI GIAN 5S)</button>
+</div>
+
+<script>
+const canvas = document.getElementById("gameCanvas"), ctx = canvas.getContext("2d");
+const uiOverlay = document.getElementById("uiOverlay");
+const btnTimeStop = document.getElementById("btnTimeStop"), btnInvinc = document.getElementById("btnInvinc");
+
+let score = 0, gameOver = false, isBossMode = false, gameSpeed = 5, gameFrame = 0;
+let isTimeStopped = false, timeStopTimer = 0, timeStopCooldown = 0;
+let isInvincible = false, invincTimer = 0, invincCooldown = 0;
+let keys = { Left: false, Right: false };
+
+const dino = { x: 50, y: 200, width: 40, height: 50, vy: 0, gravity: 0.6, jumpForce: -12, isGrounded: true, isAttacking: false, attackTimer: 0, attackWidth: 40, color: "#535353", hp: 6, maxHp: 6, speed: 4 };
+const autoBow = { x: 50, y: 180, lastShotFrame: 0, cooldown: 45 };
+const boss = { x: 630, y: -250, targetY: 100, width: 130, height: 150, hp: 70, maxHp: 70, isSpawning: true, spawnSpeedY: 4, lastSkillFrame: 0, skillCooldown: 240, currentSkill: "", summonTimer: 0 };
+
+let obstacles = [], arrows = [], playerProjectiles = [], blocks = [], bossSpears = [], cactusRain = [], bossMinions = [];
+
+// Bắt sự kiện đa điểm chính xác chống liệt nút bấm trên cảm ứng di động
+setupTouchBtn("btnLeft", () => keys.Left = true, () => keys.Left = false);
+setupTouchBtn("btnRight", () => keys.Right = true, () => keys.Right = false);
+setupTouchBtn("btnJump", () => triggerAction("jump"));
+setupTouchBtn("btnAttack", () => triggerAction("attack"));
+setupTouchBtn("btnShoot", () => triggerAction("shoot"));
+setupTouchBtn("btnTimeStop", () => triggerAction("timestop"));
+setupTouchBtn("btnInvinc", () => triggerAction("invinc"));
+
+function setupTouchBtn(id, startCallback, endCallback) {
+    const el = document.getElementById(id);
+    el.addEventListener("touchstart", (e) => { e.preventDefault(); startCallback(); });
+    if (endCallback) el.addEventListener("touchend", (e) => { e.preventDefault(); endCallback(); });
+}
+canvas.addEventListener("touchstart", (e) => { e.preventDefault(); if (gameOver) resetGame(); });
+
+function triggerAction(action) {
+    if (gameOver) return;
+    if (action === "jump" && dino.isGrounded) { dino.vy = dino.jumpForce; dino.isGrounded = false; }
+    if (action === "attack" && !dino.isAttacking) { dino.isAttacking = true; dino.attackTimer = 15; }
+    if (action === "shoot" && isBossMode && !boss.isSpawning) { playerProjectiles.push({ x: dino.x + dino.width, y: dino.y + 21, width: 18, height: 8, speed: 9 }); }
+    if (action === "timestop" && timeStopCooldown <= 0 && !isTimeStopped) { isTimeStopped = true; timeStopTimer = 300; timeStopCooldown = 600; }
+    if (action === "invinc" && invincCooldown <= 0 && !isInvincible) { isInvincible = true; invincTimer = 300; invincCooldown = 600; }
+}
+
+function resetGame() {
+    score = 0; gameOver = false; isBossMode = false; gameSpeed = 5; gameFrame = 0;
+    dino.x = 50; dino.y = 200; dino.vy = 0; dino.isGrounded = true; dino.hp = dino.maxHp;
+    isTimeStopped = false; timeStopTimer = 0; timeStopCooldown = 0;
+    isInvincible = false; invincTimer = 0; invincCooldown = 0;
+    boss.y = -250; boss.hp = boss.maxHp; boss.isSpawning = true; boss.currentSkill = ""; boss.summonTimer = 0;
+    obstacles = []; arrows = []; playerProjectiles = []; blocks = []; bossSpears = []; cactusRain = []; bossMinions = [];
+    keys.Left = false; keys.Right = false; animate();
+}
+
+function checkCollision(r1, r2) { return r1.x < r2.x + r2.width && r1.x + r1.width > r2.x && r1.y < r2.y + r2.height && r1.y + r1.height > r2.y; }
+
+function drawDino() {
+    ctx.fillStyle = isInvincible ? "#F1C40F" : dino.color; ctx.fillRect(dino.x, dino.y, dino.width, dino.height);
+    ctx.fillStyle = "#fff"; ctx.fillRect(dino.x + 25, dino.y + 10, 5, 5);
+    ctx.fillStyle = "#000"; ctx.fillRect(dino.x + 28, dino.y + 12, 2, 2);
+    if (dino.isAttacking) { ctx.fillStyle = "rgba(255, 69, 0, 0.7)"; ctx.fillRect(dino.x + dino.width, dino.y + 5, dino.attackWidth, dino.height - 10); }
+}
+function drawCactus(x, y, w, h) { ctx.fillStyle = isTimeStopped ? "#7f8c8d" : "#228B22"; ctx.fillRect(x, y, w, h); }
+function drawBird(x, y, w, h) { ctx.fillStyle = isTimeStopped ? "#95a5a6" : "#D2691E"; ctx.fillRect(x, y, w, h); }
+function drawBoss() {
+    ctx.fillStyle = isTimeStopped ? "#2c3e50" : "#4A0E17"; ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+    ctx.fillStyle = "#FF3333"; ctx.fillRect(boss.x + 15, boss.y + 30, 25, 25); ctx.fillRect(boss.x + 85, boss.y + 30, 25, 25); ctx.fillRect(boss.x + 35, boss.y + 90, 60, 15);
+    ctx.fillStyle = "#ccc"; ctx.fillRect(boss.x, boss.y - 25, boss.width, 10);
+    ctx.fillStyle = "#FF0000"; ctx.fillRect(boss.x, boss.y - 25, (boss.hp / boss.maxHp) * boss.width, 10);
+}
+function drawBlock(x, y, w, h) { ctx.fillStyle = isTimeStopped ? "#bdc3c7" : "#4682B4"; ctx.fillRect(x, y, w, h); }
+function drawMinion(x, y, w, h) { ctx.fillStyle = isTimeStopped ? "#34495e" : "#9400D3"; ctx.fillRect(x, y, w, h); ctx.fillStyle = "#FFD700"; ctx.fillRect(x + 5, y + 8, 6, 6); }
+
+function animate() {
+    if (gameOver) {
+        ctx.fillStyle = "rgba(0,0,0,0.75)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 30px Arial"; ctx.textAlign = "center"; ctx.fillText("GAME OVER", canvas.width/2, canvas.height/2 - 10);
+        ctx.font = "18px Arial"; ctx.fillText("Chạm tay vào màn hình để chơi lại", canvas.width/2, canvas.height/2 + 30); return;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (isTimeStopped) { ctx.fillStyle = "rgba(200, 200, 200, 0.2)"; ctx.fillRect(0, 0, canvas.width, canvas.height); timeStopTimer--; if (timeStopTimer <= 0) isTimeStopped = false; } else if (timeStopCooldown > 0) timeStopCooldown--;
+    if (isInvincible) { invincTimer--; if (invincTimer <= 0) isInvincible = false; } else if (invincCooldown > 0) invincCooldown--;
+
+    if (!isTimeStopped) gameFrame++;
+    ctx.strokeStyle = "#737373"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 250); ctx.lineTo(canvas.width, 250); ctx.stroke();
+
+    if (keys.Left) { dino.x -= dino.speed; if (dino.x < 0) dino.x = 0; }
+    if (keys.Right) { dino.x += dino.speed; if (isBossMode && dino.x + dino.width > boss.x) dino.x = boss.x - dino.width; else if (dino.x + dino.width > canvas.width) dino.x = canvas.width - dino.width; }
+
+    dino.vy += dino.gravity; dino.y += dino.vy;
+    let currentGroundY = 200;
+    if (dino.isAttacking) { dino.attackTimer--; if (dino.attackTimer <= 0) dino.isAttacking = false; }
+    if (score >= 20 && !isBossMode) { isBossMode = true; boss.lastSkillFrame = gameFrame; }
+
+    if (!isBossMode) {
+        if (!isTimeStopped && gameFrame % 85 === 0) {
+            let type = Math.random() > 0.45 ? "run" : "fly";
+            if (type === "run") obstacles.push({ type: "run", x: 850, y: 210, width: 25, height: 40 });
+            else obstacles.push({ type: "fly", x: 850, y: 120 + Math.random() * 50, width: 35, height: 25 });
+        }
+        if (gameFrame - autoBow.lastShotFrame > autoBow.cooldown && !isTimeStopped) {
+            let target = obstacles.find(obs => obs.type === "fly" && obs.x > dino.x);
+            if (target) { arrows.push({ x: dino.x + 20, y: dino.y + 10, width: 15, height: 6, target: target, speed: 7 }); autoBow.lastShotFrame = gameFrame; }
+        }
+    } else {
+        drawBoss();
+        if (boss.isSpawning) {
+            if (!isTimeStopped) boss.y += boss.spawnSpeedY;
+            if (boss.y >= boss.targetY) { boss.y = boss.targetY; boss.isSpawning = false; boss.lastSkillFrame = gameFrame; }
+        } else if (!isTimeStopped) {
+            if (gameFrame - boss.lastSkillFrame >= boss.skillCooldown) {
+                let rand = Math.random();
+                if (rand < 0.33) boss.currentSkill = "spear";
+                else if (rand < 0.66) { boss.currentSkill = "cactusRain"; boss.rainTimer = 180; }
+                else { boss.currentSkill = "summonMinions"; boss.summonTimer = 180; }
+                boss.lastSkillFrame = gameFrame;
+            }
+            if (boss.currentSkill === "spear" && (gameFrame - boss.lastSkillFrame === 1)) bossSpears.push({ x: dino.x + dino.width / 2 - 5, y: -50, width: 12, height: 45, speedY: (250 + 50) / 180, timer: 180 });
+            if (boss.currentSkill === "cactusRain" && boss.rainTimer > 0) { boss.rainTimer--; if (gameFrame % 10 === 0) cactusRain.push({ x: Math.random() * (boss.x - 30), y: -30, width: 20, height: 35, speedY: 4 + Math.random() * 3 }); if (boss.rainTimer <= 0) boss.currentSkill = ""; }
+            if (boss.currentSkill === "summonMinions" && boss.summonTimer > 0) { boss.summonTimer--; if (gameFrame % 40 === 0) bossMinions.push({ x: boss.x, y: 210, width: 30, height: 40, speedX: 4 }); if (boss.summonTimer <= 0) boss.currentSkill = ""; }
+        }
+
+        for (let i = bossSpears.length - 1; i >= 0; i--) {
+            let spear = bossSpears[i]; if (!isTimeStopped) { spear.y += spear.speedY; spear.timer--; }
+            ctx.fillStyle = isTimeStopped ? "#7f8c8d" : "#FF4500"; ctx.fillRect(spear.x, spear.y, spear.width, spear.height);
+            if (checkCollision(spear, dino)) { if (!isInvincible) dino.hp--; bossSpears.splice(i, 1); if (dino.hp <= 0) gameOver = true; continue; }
+            if (spear.timer <= 0 || spear.y > 250) bossSpears.splice(i, 1);
+        }
+        for (let i = cactusRain.length - 1; i >= 0; i--) {
+            let cRain = cactusRain[i]; if (!isTimeStopped) cRain.y += cRain.speedY;
+            drawCactus(cRain.x, cRain.y, cRain.width, cRain.height);
+            if (checkCollision(cRain, dino)) { if (!isInvincible) dino.hp--; cactusRain.splice(i, 1); if (dino.hp <= 0) gameOver = true; continue; }
+            if (cRain.y > 250) cactusRain.splice(i, 1);
+        }
+        for (let i = bossMinions.length - 1; i >= 0; i--) {
+            let m = bossMinions[i]; if (!isTimeStopped) m.x -= m.speedX; drawMinion(m.x, m.y, m.width, m.height);
+            if (dino.isAttacking && checkCollision({ x: dino.x + dino.width, y: dino.y, width: dino.attackWidth, height: dino.height }, m)) { bossMinions.splice(i, 1); score++; continue; }
+            if (checkCollision(dino, m)) { if (!isInvincible) dino.hp--; bossMinions.splice(i, 1); if (dino.hp <= 0) gameOver = true; continue; }
+            if (m.x + m.width < 0) bossMinions.splice(i, 1);
+        }
+        if (!boss.isSpawning && gameFrame % 130 === 0 && !isTimeStopped) blocks.push({ x: 850, y: 155 + Math.random() * 35, width: 60, height: 20 });
+        for (let i = blocks.length - 1; i >= 0; i--) {
+            if (!isTimeStopped) blocks[i].x -= 3; drawBlock(blocks[i].x, blocks[i].y, blocks[i].width, blocks[i].height);
+            if (dino.x + dino.width > blocks[i].x && dino.x < blocks[i].x + blocks[i].width && dino.y + dino.height <= blocks[i].y + 10 && dino.y + dino.height + dino.vy >= blocks[i].y) currentGroundY = blocks[i].y - dino.height;
+            if (blocks[i].x + blocks[i].width < 0) { blocks.splice(i, 1); score++; }
+        }
+        for (let i = playerProjectiles.length - 1; i >= 0; i--) {
+            let p = playerProjectiles[i]; p.x += p.speed; ctx.fillStyle = "#FFD700"; ctx.fillRect(p.x, p.y, p.width, p.height);
+            if (checkCollision(p, boss)) { boss.hp--; playerProjectiles.splice(i, 1); if (boss.hp <= 0) { alert("Phá đảo Màn 1 thành công!"); resetGame(); return; } continue; }
+            if (p.x > canvas.width) playerProjectiles.splice(i, 1);
+        }
+    }
+
+    if (dino.y >= currentGroundY) { dino.y = currentGroundY; dino.vy = 0; dino.isGrounded = true; }
+    else if (dino.y < currentGroundY && dino.y >= 200) { dino.y = 200; dino.vy = 0; dino.isGrounded = true; }
+    drawDino();
+
+    for (let i = arrows.length - 1; i >= 0; i--) {
+        let a = arrows[i];
+        if (!isTimeStopped) { let dx = a.target.x - a.x, dy = a.target.y - a.y, dist = Math.sqrt(dx*dx + dy*dy); if (dist > 5 && obstacles.includes(a.target)) { a.x += (dx / dist) * a.speed; a.y += (dy / dist) * a.speed; } else a.x += a.speed; }
+        ctx.fillStyle = "#8B4513"; ctx.fillRect(a.x, a.y, a.width, a.height);
+        if (checkCollision(a, a.target)) { let idx = obstacles.indexOf(a.target); if (idx > -1) { obstacles.splice(idx, 1); score += 2; } arrows.splice(i, 1); continue; }
+        if (a.x > canvas.width || a.x < 0) arrows.splice(i, 1);
+    }
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+        let o = obstacles[i]; if (!isTimeStopped) o.x -= gameSpeed;
+        if (o.type === "run") drawCactus(o.x, o.y, o.width, o.height); else drawBird(o.x, o.y, o.width, o.height);
+        if (dino.isAttacking && checkCollision({ x: dino.x + dino.width, y: dino.y, width: dino.attackWidth, height: dino.height }, o)) { obstacles.splice(i, 1); score++; continue; }
+        if (checkCollision(dino, o)) { if (!isInvincible) dino.hp--; obstacles.splice(i, 1); if (dino.hp <= 0) gameOver = true; }
+        if (o.x + o.width < 0) { obstacles.splice(i, 1); score++; }
+    }
+
+    // Cập nhật trạng thái hiển thị của các Nút Chiêu Thức
+    btnTimeStop.innerText = isTimeStopped ? `THE WORLD (${Math.ceil(timeStopTimer / 60)}s)` : (timeStopCooldown > 0 ? `HỒI CHIÊU (${Math.ceil(timeStopCooldown / 60)}s)` : "THE WORLD (NGỪNG THỜI GIAN 5S)");
+    btnTimeStop.disabled = isTimeStopped || timeStopCooldown > 0;
+    btnInvinc.innerText = isInvincible ? `BẤT TỬ KHÔNG MẤT MÁU (${Math.ceil(invincTimer / 60)}s)` : (invincCooldown > 0 ? `HỒI CHIÊU (${Math.ceil(invincCooldown / 60)}s)` : "BẤT KHẢ CHIẾN BẠI (5 GIÂY)");
+    btnInvinc.disabled = isInvincible || invincCooldown > 0;
+
+    uiOverlay.innerText = isBossMode ? `STAGE 1 | DINO: ${dino.hp}/6 | BOSS MÀN 1: ${boss.hp}/70\nĐiểm: ${score}` : `STAGE 1 | DINO HP: ${dino.hp}/6\nĐiểm: ${score} / 20`;
+    requestAnimationFrame(animate);
+}
+resetGame();
+</script>
+</body>
+</html>
